@@ -6,3 +6,21 @@ ta
 backtesting
 joblib
 tqdm
+
+# Tree models
+lightgbm
+xgboost
+
+# Model diagnostics
+matplotlib
+seaborn
+
+# Optional but very useful
+scipy
+statsmodels
+
+# Performance
+numba
+
+# Hyperparameter research (optional)
+optuna

@@ -5,3 +5,4 @@ __pycache__/
 .env
 centralized_data/
 optuna_*.db
+models/
