@@ -1,8 +1,13 @@
-.venv/
+# Python
 __pycache__/
 *.pyc
-.DS_Store
-.env
+.venv/
+
+# Data
 centralized_data/
-optuna_*.db
-models/
+
+# Experiments (logs are OK, raw plots not needed)
+experiments/reports/
+
+# OS
+.DS_Store
