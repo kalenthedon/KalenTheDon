@@ -6,6 +6,7 @@ ta
 backtesting
 joblib
 tqdm
+rich
 
 # Tree models
 lightgbm

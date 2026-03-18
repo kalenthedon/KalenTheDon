@@ -1,9 +1,8 @@
-# src/ml/walkforward_train.py
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple, Dict, Any
 
 import joblib
 import numpy as np
@@ -11,7 +10,6 @@ import pandas as pd
 
 from sklearn.base import BaseEstimator
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.metrics import roc_auc_score, log_loss
 
 from src.validation.purged_cv import (
     PurgedWalkForwardConfig,
@@ -25,22 +23,22 @@ class WalkForwardRunConfig:
     feature_cols: List[str]
     label_col: str
 
-    # Purged WF
+    # Purged walk-forward
     train_size: int
     test_size: int
     step_size: int
     purge_size: int
     embargo_size: int = 0
 
-    # Early stopping (recommended for boosted trees)
+    # Early stopping
     enable_early_stopping: bool = True
     early_stopping_rounds: int = 100
-    early_stop_val_frac: float = 0.15  # slice off last X% of TRAIN for early stopping validation
+    early_stop_val_frac: float = 0.15
 
-    # Calibration (recommended for trading thresholds)
+    # Calibration
     calibrate: bool = True
-    calibrator_method: str = "sigmoid"   # "sigmoid" or "isotonic"
-    calibrator_val_frac: float = 0.15    # slice off last X% of TRAIN for calibration
+    calibrator_method: str = "sigmoid"
+    calibrator_val_frac: float = 0.15
 
     # Persistence
     save_models: bool = False
@@ -66,64 +64,41 @@ def _split_train_for_earlystop_and_calibration(
     enable_early_stopping: bool,
     enable_calibration: bool,
 ) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
-    """
-    Returns:
-      fit_idx: indices used to fit the base model
-      es_idx: indices used for early stopping eval_set (or None)
-      cal_idx: indices used to fit the calibrator (or None)
+    total_tail = 0.0
 
-    Order is time-consistent: [ ... fit ... | ... earlystop ... | ... calibrate ... ]
-    """
     if enable_early_stopping:
         if not (0.0 < early_stop_frac < 0.5):
-            raise ValueError("early_stop_val_frac should be between (0, 0.5)")
+            raise ValueError("early_stop_val_frac must be between (0, 0.5)")
+        total_tail += early_stop_frac
+
     if enable_calibration:
         if not (0.0 < calibrator_frac < 0.5):
-            raise ValueError("calibrator_val_frac should be between (0, 0.5)")
-
-    total_tail = 0.0
-    if enable_early_stopping:
-        total_tail += early_stop_frac
-    if enable_calibration:
+            raise ValueError("calibrator_val_frac must be between (0, 0.5)")
         total_tail += calibrator_frac
 
-    # We need enough room for fit data; keep tail slices under 50% of train
     if total_tail >= 0.5:
-        raise ValueError(
-            "early_stop_val_frac + calibrator_val_frac must be < 0.5 "
-            "(need enough data to fit the model)."
-        )
+        raise ValueError("early_stop_val_frac + calibrator_val_frac must be < 0.5")
 
     n = len(train_idx)
-    # compute slice sizes
-    n_cal = int(n * calibrator_frac) if enable_calibration else 0
-    n_es = int(n * early_stop_frac) if enable_early_stopping else 0
+    n_cal = max(1, int(n * calibrator_frac)) if enable_calibration else 0
+    n_es = max(1, int(n * early_stop_frac)) if enable_early_stopping else 0
 
-    # ensure at least 1 sample if enabled
-    if enable_calibration:
-        n_cal = max(1, n_cal)
-    if enable_early_stopping:
-        n_es = max(1, n_es)
-
-    # If both enabled, calibration gets the very last chunk
-    # early-stop chunk sits just before it
     end = n
     cal_idx = None
     es_idx = None
 
     if enable_calibration:
         cal_idx = train_idx[end - n_cal : end]
-        end = end - n_cal
+        end -= n_cal
 
     if enable_early_stopping:
         es_idx = train_idx[end - n_es : end]
-        end = end - n_es
+        end -= n_es
 
     fit_idx = train_idx[:end]
 
     if len(fit_idx) < 50:
-        # too small to fit anything meaningfully
-        raise ValueError("Train window too small after splits (fit_idx < 50). Reduce val fracs or increase train_size.")
+        raise ValueError("Train too small after splits; reduce fracs or increase train_size.")
 
     return fit_idx, es_idx, cal_idx
 
@@ -136,10 +111,6 @@ def _fit_with_optional_early_stopping(
     y_es: Optional[pd.Series],
     cfg: WalkForwardRunConfig,
 ) -> BaseEstimator:
-    """
-    Fits model. If model is LightGBM/XGBoost and early-stopping data is provided, uses it.
-    Otherwise fits normally.
-    """
     use_es = (
         cfg.enable_early_stopping
         and X_es is not None
@@ -152,8 +123,6 @@ def _fit_with_optional_early_stopping(
         model.fit(X_fit, y_fit)
         return model
 
-    # Try common sklearn-style early stopping args.
-    # If unsupported (TypeError), fall back to normal fit.
     try:
         model.fit(
             X_fit,
@@ -163,7 +132,6 @@ def _fit_with_optional_early_stopping(
             verbose=False,
         )
     except TypeError:
-        # Some wrappers use callbacks or different params; safest fallback:
         model.fit(X_fit, y_fit)
 
     return model
@@ -174,13 +142,11 @@ def walk_forward_train_predict(
     model_factory: Callable[[], BaseEstimator],
     cfg: WalkForwardRunConfig,
     time_col: Optional[str] = None,
-) -> pd.DataFrame:
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
-    Purged walk-forward training and OOS prediction with optional:
-      - Early stopping (LightGBM/XGBoost)
-      - Probability calibration (Platt/Isotonic)
-
-    Returns a DataFrame of out-of-sample predictions.
+    Returns:
+      pred_df: out-of-sample predictions
+      diag: diagnostics dict with OOS metrics and fold diagnostics
     """
     assert_time_sorted(df, time_col=time_col)
 
@@ -200,11 +166,11 @@ def walk_forward_train_predict(
 
     out_index = df[time_col] if time_col is not None else df.index
     preds_out: List[pd.DataFrame] = []
+    fold_diags: List[Dict[str, Any]] = []
 
     os.makedirs(cfg.model_dir, exist_ok=True)
 
     for fold_id, (train_idx, test_idx) in enumerate(splitter.split(n)):
-        # Remove NaNs within fold
         train_mask = np.isfinite(X.iloc[train_idx].to_numpy()).all(axis=1) & np.isfinite(y.iloc[train_idx].to_numpy())
         test_mask = np.isfinite(X.iloc[test_idx].to_numpy()).all(axis=1) & np.isfinite(y.iloc[test_idx].to_numpy())
 
@@ -219,7 +185,6 @@ def walk_forward_train_predict(
         X_test = X.iloc[test_idx_eff]
         y_test = y.iloc[test_idx_eff]
 
-        # Split training into: fit | earlystop | calibrate (time-consistent)
         try:
             fit_idx, es_idx, cal_idx = _split_train_for_earlystop_and_calibration(
                 train_idx=train_idx_eff,
@@ -229,7 +194,6 @@ def walk_forward_train_predict(
                 enable_calibration=cfg.calibrate,
             )
         except ValueError:
-            # If splitting fails due to small windows, fall back to fitting on full train
             fit_idx = train_idx_eff
             es_idx = None
             cal_idx = None
@@ -240,10 +204,8 @@ def walk_forward_train_predict(
         X_es = X.iloc[es_idx] if es_idx is not None else None
         y_es = y.iloc[es_idx] if es_idx is not None else None
 
-        # Fit base model (optionally with early stopping)
         model = _fit_with_optional_early_stopping(model, X_fit, y_fit, X_es, y_es, cfg)
 
-        # Raw probabilities
         proba_raw = model.predict_proba(X_test)[:, 1]
 
         if cfg.calibrate and cal_idx is not None and len(cal_idx) >= 20:
@@ -285,6 +247,37 @@ def walk_forward_train_predict(
                 index=out_index[test_idx_eff],
             )
 
+        try:
+            from sklearn.metrics import roc_auc_score, log_loss
+
+            proba_col = "proba_cal" if "proba_cal" in fold_df.columns else "proba_raw"
+            y_true_fold = fold_df["y_true"].astype(int).to_numpy()
+            p_fold = fold_df[proba_col].astype(float).to_numpy()
+
+            fold_auc = float(roc_auc_score(y_true_fold, p_fold))
+            fold_auc_inv = float(roc_auc_score(y_true_fold, 1.0 - p_fold))
+            fold_ll = float(log_loss(y_true_fold, p_fold))
+            fold_pos_rate = float(np.mean(y_true_fold))
+
+            fold_diags.append({
+                "fold_id": int(fold_id),
+                "n": int(len(fold_df)),
+                "pos_rate": fold_pos_rate,
+                "proba_col": proba_col,
+                "auc": fold_auc,
+                "auc_inverted": fold_auc_inv,
+                "logloss": fold_ll,
+                "start": str(fold_df.index.min()),
+                "end": str(fold_df.index.max()),
+            })
+
+            print(
+                f"Fold {fold_id} | n={len(fold_df)} | pos={fold_pos_rate:.3f} | "
+                f"AUC={fold_auc:.4f} | invAUC={fold_auc_inv:.4f} | LL={fold_ll:.6f}"
+            )
+        except Exception as e:
+            print(f"Fold {fold_id} diagnostics skipped: {e}")
+
         preds_out.append(fold_df)
 
     if not preds_out:
@@ -292,21 +285,35 @@ def walk_forward_train_predict(
 
     pred_df = pd.concat(preds_out).sort_index()
 
-    # --- Global OOS diagnostics ---
+    oos_auc = float("nan")
+    oos_auc_inverted = float("nan")
+    oos_logloss = float("nan")
+    proba_col = "proba_cal" if "proba_cal" in pred_df.columns else "proba_raw"
+
     try:
         from sklearn.metrics import roc_auc_score, log_loss
 
-        proba_col = "proba_cal" if "proba_cal" in pred_df.columns else "proba_raw"
+        y_true = pred_df["y_true"].astype(int).to_numpy()
+        p = pred_df[proba_col].astype(float).to_numpy()
 
-        auc = roc_auc_score(pred_df["y_true"], pred_df[proba_col])
-        ll = log_loss(pred_df["y_true"], pred_df[proba_col])
+        oos_auc = float(roc_auc_score(y_true, p))
+        oos_auc_inverted = float(roc_auc_score(y_true, 1.0 - p))
+        oos_logloss = float(log_loss(y_true, p))
 
         print("\n=== OOS Classification Diagnostics ===")
-        print(f"OOS AUC: {auc:.4f}")
-        print(f"OOS LogLoss: {ll:.6f}")
-        inv_auc = roc_auc_score(pred_df["y_true"], 1.0 - pred_df[proba_col])
-        print(f"OOS AUC (inverted probs): {inv_auc:.4f}")
+        print(f"OOS AUC: {oos_auc:.4f}")
+        print(f"OOS LogLoss: {oos_logloss:.6f}")
+        print(f"OOS AUC (inverted probs): {oos_auc_inverted:.4f}")
     except Exception as e:
-        print(f"AUC calculation skipped: {e}")
-        
-    return pred_df
+        print(f"OOS diagnostics skipped: {e}")
+
+    diag = {
+        "proba_col": proba_col,
+        "oos_auc": oos_auc,
+        "oos_auc_inverted": oos_auc_inverted,
+        "oos_logloss": oos_logloss,
+        "fold_diags": fold_diags,
+        "n_preds": int(len(pred_df)),
+    }
+
+    return pred_df, diag

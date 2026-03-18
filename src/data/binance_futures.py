@@ -1,11 +1,12 @@
 import os
 import time
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 import pandas as pd
 import requests
 
-HYPERLIQUID_URL = "https://api.hyperliquid.xyz/info"
+BINANCE_FAPI_URL = "https://fapi.binance.com"
 
 
 def _to_ms(dt: datetime) -> int:
@@ -19,6 +20,8 @@ def _interval_to_timedelta(interval: str) -> timedelta:
         return timedelta(hours=int(interval[:-1]))
     if interval.endswith("d"):
         return timedelta(days=int(interval[:-1]))
+    if interval.endswith("w"):
+        return timedelta(weeks=int(interval[:-1]))
     raise ValueError(f"Unsupported interval: {interval}")
 
 
@@ -42,62 +45,88 @@ def _floor_dt_to_interval(dt: datetime, interval: str) -> datetime:
         floored_day = ((dt.day - 1) // days) * days + 1
         return dt.replace(day=floored_day, hour=0, minute=0, second=0, microsecond=0)
 
+    if interval.endswith("w"):
+        weeks = int(interval[:-1])
+        # floor to Monday 00:00 UTC, then align by week block
+        base = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        monday = base - timedelta(days=base.weekday())
+        epoch_monday = datetime(1970, 1, 5, tzinfo=timezone.utc)
+        weeks_since_epoch = (monday - epoch_monday).days // 7
+        floored_weeks = (weeks_since_epoch // weeks) * weeks
+        return epoch_monday + timedelta(weeks=floored_weeks)
+
     raise ValueError(f"Unsupported interval: {interval}")
 
 
-def fetch_candles_window(
+def _binance_symbol(symbol: str) -> str:
+    symbol = symbol.upper()
+    if symbol.endswith("USDT"):
+        return symbol
+    return f"{symbol}USDT"
+
+
+def fetch_exchange_info(session: Optional[requests.Session] = None) -> dict:
+    client = session or requests
+    r = client.get(f"{BINANCE_FAPI_URL}/fapi/v1/exchangeInfo", timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
+def validate_symbol_exists(symbol: str, session: Optional[requests.Session] = None) -> None:
+    exchange_info = fetch_exchange_info(session=session)
+    available = {s["symbol"] for s in exchange_info.get("symbols", [])}
+    if symbol not in available:
+        raise ValueError(
+            f"Binance USD-M futures symbol not found: {symbol}. "
+            f"Sample available symbols: {sorted(list(available))[:20]}"
+        )
+
+
+def fetch_klines_window(
     symbol: str,
     interval: str,
     start_dt: datetime,
     end_dt: datetime,
-    session: "requests.Session" = None,
+    limit: int = 1500,
+    session: Optional[requests.Session] = None,
 ) -> list:
-    payload = {
-        "type": "candleSnapshot",
-        "req": {
-            "coin": symbol,
-            "interval": interval,
-            "startTime": _to_ms(start_dt),
-            "endTime": _to_ms(end_dt),
-        },
+    params = {
+        "symbol": symbol,
+        "interval": interval,
+        "startTime": _to_ms(start_dt),
+        "endTime": _to_ms(end_dt),
+        "limit": limit,
     }
 
     client = session or requests
-    r = client.post(
-        HYPERLIQUID_URL,
-        headers={"Content-Type": "application/json"},
-        json=payload,
-        timeout=30,
-    )
+    r = client.get(f"{BINANCE_FAPI_URL}/fapi/v1/klines", params=params, timeout=30)
     r.raise_for_status()
     data = r.json()
 
-    if isinstance(data, dict) and "candles" in data:
-        return data["candles"]
-    if isinstance(data, list):
-        return data
-    return []
+    if not isinstance(data, list):
+        raise ValueError(f"Unexpected Binance klines response: {data}")
+
+    return data
 
 
-def candles_to_df(candles: list) -> pd.DataFrame:
-    if not candles:
+def klines_to_df(klines: list) -> pd.DataFrame:
+    if not klines:
         return pd.DataFrame()
 
-    df = pd.DataFrame(
-        [
+    rows = []
+    for k in klines:
+        rows.append(
             {
-                "timestamp": datetime.fromtimestamp(c["t"] / 1000, tz=timezone.utc),
-                "Open": c["o"],
-                "High": c["h"],
-                "Low": c["l"],
-                "Close": c["c"],
-                "Volume": c["v"],
+                "timestamp": datetime.fromtimestamp(k[0] / 1000, tz=timezone.utc),
+                "Open": k[1],
+                "High": k[2],
+                "Low": k[3],
+                "Close": k[4],
+                "Volume": k[5],
             }
-            for c in candles
-        ]
-    )
+        )
 
-    df = df.set_index("timestamp").sort_index()
+    df = pd.DataFrame(rows).set_index("timestamp").sort_index()
 
     for col in ["Open", "High", "Low", "Close", "Volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -129,9 +158,13 @@ def fetch_history_paginated(
     interval: str,
     lookback_weeks: int,
     out_csv_path: str,
-    max_per_call: int = 5000,
-    sleep_s: float = 0.25,
+    max_per_call: int = 1500,
+    sleep_s: float = 0.20,
 ) -> pd.DataFrame:
+    if max_per_call > 1500:
+        raise ValueError("Binance USD-M futures klines limit cannot exceed 1500.")
+
+    symbol = _binance_symbol(symbol)
     bar_delta = _interval_to_timedelta(interval)
     end_dt = _floor_dt_to_interval(datetime.now(timezone.utc), interval)
     start_target = end_dt - timedelta(weeks=lookback_weeks)
@@ -141,25 +174,27 @@ def fetch_history_paginated(
     seen_earliest_ts = None
 
     session = requests.Session()
+    validate_symbol_exists(symbol, session=session)
 
     iter_count = 0
     while end_dt >= start_target:
         iter_count += 1
         start_dt = max(start_target, end_dt - window)
 
-        print(f"[{iter_count}] Fetch {symbol} {interval} {start_dt} -> {end_dt}")
+        print(f"[{iter_count}] Fetch Binance {symbol} {interval} {start_dt} -> {end_dt}")
 
-        candles = fetch_candles_window(symbol, interval, start_dt, end_dt, session=session)
-        df = candles_to_df(candles)
-        if not df.empty:
-         print(
-            f"DEBUG: rows={len(df)}, "
-            f"min={df.index.min()}, "
-            f"max={df.index.max()}"
-    )
+        klines = fetch_klines_window(
+            symbol=symbol,
+            interval=interval,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            limit=max_per_call,
+            session=session,
+        )
+        df = klines_to_df(klines)
 
         if df.empty:
-            print("No more data returned by API (empty). Stopping.")
+            print("No more data returned by Binance (empty). Stopping.")
             break
 
         first_ts = df.index.min()
@@ -179,8 +214,6 @@ def fetch_history_paginated(
 
         all_chunks.append(df)
         seen_earliest_ts = first_ts
-
-        # Move back exactly one full bar to stay on candle boundaries.
         end_dt = first_ts - bar_delta
 
         if end_dt < start_target:
@@ -208,7 +241,8 @@ def load_or_fetch(
     lookback_weeks: int,
     data_dir: str = "centralized_data",
 ) -> pd.DataFrame:
-    path = os.path.join(data_dir, f"{symbol}-{interval}-{lookback_weeks}w.csv")
+    normalized_symbol = _binance_symbol(symbol)
+    path = os.path.join(data_dir, f"binance-{normalized_symbol}-{interval}-{lookback_weeks}w.csv")
 
     if os.path.exists(path):
         df = pd.read_csv(path, parse_dates=["timestamp"])
@@ -229,4 +263,9 @@ def load_or_fetch(
         print("Cache coverage insufficient for requested lookback -> refetching.")
         os.remove(path)
 
-    return fetch_history_paginated(symbol, interval, lookback_weeks, out_csv_path=path)
+    return fetch_history_paginated(
+        symbol=symbol,
+        interval=interval,
+        lookback_weeks=lookback_weeks,
+        out_csv_path=path,
+    )
