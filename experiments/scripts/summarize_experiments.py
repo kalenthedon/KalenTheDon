@@ -152,6 +152,37 @@ def style_regime(x):
         return Text("bear", style="bold red")
     return Text("sideways", style="bold yellow")
 
+def classify_signal_regime(row) -> str:
+    auc = safe_float(row.get("oos_auc"))
+    gap = safe_float(row.get("oos_auc") - row.get("oos_auc_inverted"))
+    trades = safe_float(row.get("trades"))
+
+    if math.isnan(auc) or math.isnan(gap) or math.isnan(trades):
+        return "unknown"
+
+    if trades < 30:
+        return "too_sparse"
+
+    if auc >= 0.54 and gap >= 0.08:
+        return "strong"
+
+    if auc >= 0.53 and gap >= 0.06:
+        return "moderate"
+
+    return "weak"
+
+
+def style_signal_regime(x):
+    x = str(x).lower()
+    if x == "strong":
+        return Text("strong", style="bold green")
+    if x == "moderate":
+        return Text("moderate", style="bold yellow")
+    if x == "weak":
+        return Text("weak", style="bold red")
+    if x == "too_sparse":
+        return Text("too_sparse", style="bold magenta")
+    return Text("unknown", style="dim")
 
 def make_run_table(row, title):
     table = Table(
@@ -451,6 +482,132 @@ def make_research_focus_table(df: pd.DataFrame):
 
     return table
 
+def make_best_signal_by_regime_table(df: pd.DataFrame):
+    table = Table(
+        title="Best Signal by Regime Bucket",
+        title_style="bold cyan",
+        box=box.ROUNDED,
+        show_lines=True,
+        expand=True,
+    )
+
+    table.add_column("Regime", style="bold magenta")
+    table.add_column("Timestamp", style="white")
+    table.add_column("Model", style="bold white")
+    table.add_column("Market", style="bold white")
+    table.add_column("Horizon", justify="right")
+    table.add_column("Threshold", justify="right")
+    table.add_column("AUC", justify="right")
+    table.add_column("invAUC", justify="right")
+    table.add_column("Gap", justify="right")
+    table.add_column("LogLoss", justify="right")
+    table.add_column("Trades", justify="right")
+
+    if df.empty:
+        table.add_row("No data", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-")
+        return table
+
+    x = df.copy()
+    x["auc_gap"] = x["oos_auc"] - x["oos_auc_inverted"]
+    x["signal_regime"] = x.apply(classify_signal_regime, axis=1)
+
+    for regime in ["strong", "moderate", "weak", "too_sparse"]:
+        bucket = x[x["signal_regime"] == regime].copy()
+        if bucket.empty:
+            table.add_row(regime, "-", "-", "-", "-", "-", "-", "-", "-", "-", "-")
+            continue
+
+        best = bucket.sort_values(
+            ["oos_auc", "auc_gap", "oos_logloss"],
+            ascending=[False, False, True],
+        ).iloc[0]
+
+        auc_text, auc_style = style_auc(best["oos_auc"])
+        inv_auc_text, inv_auc_style = style_inv_auc(best["oos_auc_inverted"])
+        gap_text, gap_style = style_gap(best["oos_auc"], best["oos_auc_inverted"])
+        ll_text, ll_style = style_logloss(best["oos_logloss"])
+        trades_text, trades_style = style_trades(best["trades"])
+
+        table.add_row(
+            regime,
+            str(best["timestamp"]),
+            str(best.get("model", "")),
+            f"{best['symbol']} {best['interval']}",
+            str(int(best["horizon_bars"])),
+            str(best["threshold"]),
+            Text(auc_text, style=auc_style),
+            Text(inv_auc_text, style=inv_auc_style),
+            Text(gap_text, style=gap_style),
+            Text(ll_text, style=ll_style),
+            Text(trades_text, style=trades_style),
+        )
+
+    return table
+
+def make_signal_leaderboard_for_regime(df: pd.DataFrame, regime: str, top_n: int = 5, min_trades: int = 30):
+    title = f"Signal Leaderboard: {regime} regime"
+
+    table = Table(
+        title=title,
+        title_style="bold cyan",
+        box=box.ROUNDED,
+        show_lines=False,
+        expand=True,
+    )
+
+    table.add_column("Timestamp", style="white")
+    table.add_column("Source", style="bold white")
+    table.add_column("Model", style="bold white")
+    table.add_column("Market", style="bold white")
+    table.add_column("Horizon", justify="right")
+    table.add_column("Threshold", justify="right")
+    table.add_column("AUC", justify="right")
+    table.add_column("invAUC", justify="right")
+    table.add_column("Gap", justify="right")
+    table.add_column("LogLoss", justify="right")
+    table.add_column("Trades", justify="right")
+
+    if df.empty:
+        table.add_row("No data", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-")
+        return table
+
+    x = df.copy()
+    x["auc_gap"] = x["oos_auc"] - x["oos_auc_inverted"]
+    x["signal_regime"] = x.apply(classify_signal_regime, axis=1)
+    x = x[(x["trades"].fillna(0) >= min_trades) & (x["signal_regime"] == regime)].copy()
+
+    if x.empty:
+        table.add_row("No rows", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-")
+        return table
+
+    ranked = x.sort_values(
+        ["oos_auc", "auc_gap", "oos_logloss"],
+        ascending=[False, False, True],
+    ).head(top_n)
+
+    for _, row in ranked.iterrows():
+        auc_text, auc_style = style_auc(row["oos_auc"])
+        inv_auc_text, inv_auc_style = style_inv_auc(row["oos_auc_inverted"])
+        gap_text, gap_style = style_gap(row["oos_auc"], row["oos_auc_inverted"])
+        ll_text, ll_style = style_logloss(row["oos_logloss"])
+        trades_text, trades_style = style_trades(row["trades"])
+
+        table.add_row(
+            str(row["timestamp"]),
+            str(row.get("data_source", "unknown")),
+            str(row.get("model", "")),
+            f"{row['symbol']} {row['interval']}",
+            str(int(row["horizon_bars"])),
+            str(row["threshold"]),
+            Text(auc_text, style=auc_style),
+            Text(inv_auc_text, style=inv_auc_style),
+            Text(gap_text, style=gap_style),
+            Text(ll_text, style=ll_style),
+            Text(trades_text, style=trades_style),
+        )
+
+    return table
+
 def export_html_dashboard(exp: pd.DataFrame):
     import os
     import webbrowser
@@ -460,11 +617,12 @@ def export_html_dashboard(exp: pd.DataFrame):
 
     df = exp.copy()
 
-    # 🔥 core metrics
+    # core metrics
     df["edge"] = df["oos_auc_inverted"] - 0.5
     df["auc_gap"] = df["oos_auc"] - df["oos_auc_inverted"]
+    df["signal_regime"] = df.apply(classify_signal_regime, axis=1)
 
-    df = df.sort_values("timestamp", ascending=False)
+    df = df.sort_values("timestamp", ascending=False).reset_index(drop=True)
 
     def color(val, good, mid):
         if pd.isna(val):
@@ -484,38 +642,74 @@ def export_html_dashboard(exp: pd.DataFrame):
             return "orange"
         return "red"
 
+    def regime_html(x):
+        x = str(x).lower()
+        if x == "strong":
+            return "<span style='color:limegreen;font-weight:bold;'>strong</span>"
+        if x == "moderate":
+            return "<span style='color:orange;font-weight:bold;'>moderate</span>"
+        if x == "weak":
+            return "<span style='color:red;font-weight:bold;'>weak</span>"
+        if x == "too_sparse":
+            return "<span style='color:magenta;font-weight:bold;'>too_sparse</span>"
+        return "<span style='color:gray;'>unknown</span>"
+
+    def fmt_int(x):
+        if pd.isna(x):
+            return "nan"
+        return str(int(x))
+
+    def fmt_float(x, decimals=4):
+        if pd.isna(x):
+            return "nan"
+        return f"{x:.{decimals}f}"
+
+    def fmt_pct_html(x, decimals=2):
+        if pd.isna(x):
+            return "nan"
+        return f"{x:.{decimals}f}%"
+
     def row_html(row):
         return f"""
         <tr>
-            <td>{row['timestamp']}</td>
-            <td>{row.get('data_source')}</td>
-            <td>{row.get('model')}</td>
-            <td>{row.get('symbol')} {row.get('interval')}</td>
-            <td>{int(row.get('horizon_bars', 0))}</td>
-            <td>{row.get('threshold')}</td>
+            <td>{row.get('timestamp', '')}</td>
+            <td>{row.get('data_source', 'unknown')}</td>
+            <td>{row.get('model', '')}</td>
+            <td>{row.get('symbol', '')} {row.get('interval', '')}</td>
+            <td>{fmt_int(row.get('horizon_bars'))}</td>
+            <td>{row.get('threshold', 'nan')}</td>
+            <td>{regime_html(row.get('signal_regime', 'unknown'))}</td>
 
-            <td style='color:{color(row['oos_auc'], 0.55, 0.52)}'>{row['oos_auc']:.4f}</td>
-            <td style='color:{color_inv(row['oos_auc_inverted'], 0.45, 0.48)}'>{row['oos_auc_inverted']:.4f}</td>
-            <td style='color:{color(row['auc_gap'], 0.05, 0.02)}'>{row['auc_gap']:.4f}</td>
-            <td>{row['edge']:.4f}</td>
+            <td style='color:{color(row.get("oos_auc"), 0.55, 0.52)}'>{fmt_float(row.get("oos_auc"), 4)}</td>
+            <td style='color:{color_inv(row.get("oos_auc_inverted"), 0.45, 0.48)}'>{fmt_float(row.get("oos_auc_inverted"), 4)}</td>
+            <td style='color:{color(row.get("auc_gap"), 0.05, 0.02)}'>{fmt_float(row.get("auc_gap"), 4)}</td>
+            <td>{fmt_float(row.get("edge"), 4)}</td>
 
-            <td style='color:{color(-row['oos_logloss'], -0.69, -0.72)}'>{row['oos_logloss']:.4f}</td>
+            <td style='color:{color(-row.get("oos_logloss") if not pd.isna(row.get("oos_logloss")) else float("nan"), -0.69, -0.72)}'>{fmt_float(row.get("oos_logloss"), 4)}</td>
 
-            <td style='color:{color(row['return_pct'], 15, 0)}'>{row['return_pct']:.2f}%</td>
-            <td style='color:{color(-abs(row['max_drawdown_pct']), -10, -20)}'>{row['max_drawdown_pct']:.2f}%</td>
+            <td style='color:{color(row.get("return_pct"), 15, 0)}'>{fmt_pct_html(row.get("return_pct"), 2)}</td>
+            <td style='color:{color(-abs(row.get("max_drawdown_pct")) if not pd.isna(row.get("max_drawdown_pct")) else float("nan"), -10, -20)}'>{fmt_pct_html(row.get("max_drawdown_pct"), 2)}</td>
 
-            <td>{int(row.get('trades', 0))}</td>
+            <td>{fmt_int(row.get("trades"))}</td>
         </tr>
         """
 
-    def make_table(title, df_slice):
-        rows = "".join([row_html(r) for _, r in df_slice.iterrows()])
+    def make_table(title, df_slice, empty_msg="No rows"):
+        if df_slice.empty:
+            rows = f"""
+            <tr>
+                <td colspan="15" style="text-align:center;color:gray;">{empty_msg}</td>
+            </tr>
+            """
+        else:
+            rows = "".join([row_html(r) for _, r in df_slice.iterrows()])
+
         return f"""
         <h2>{title}</h2>
         <table>
         <tr>
             <th>Time</th><th>Source</th><th>Model</th><th>Market</th>
-            <th>H</th><th>Thr</th>
+            <th>H</th><th>Thr</th><th>SigRegime</th>
             <th>AUC</th><th>invAUC</th><th>Gap</th><th>Edge</th>
             <th>LogLoss</th><th>Return</th><th>DD</th><th>Trades</th>
         </tr>
@@ -523,22 +717,48 @@ def export_html_dashboard(exp: pd.DataFrame):
         </table>
         """
 
-    # 🔥 sections
+    # sections
     latest = df.head(10)
 
-    best_signal = df.sort_values(
+    # enforce sparse filter in HTML best signal section
+    best_signal = df[df["trades"].fillna(0) >= 30].sort_values(
         ["oos_auc", "auc_gap", "oos_logloss"],
         ascending=[False, False, True]
     ).head(10)
 
-    best_return = df.sort_values("return_pct", ascending=False).head(10)
+    # fix ranking bug: better edge means LOWER inverted AUC, so sort edge ascending
+    best_edge = df[df["trades"].fillna(0) >= 30].sort_values(
+        ["edge", "oos_auc", "auc_gap"],
+        ascending=[True, False, False]
+    ).head(10)
 
-    best_edge = df.sort_values("edge", ascending=False).head(10)
+    best_return = df[df["trades"].fillna(0) >= 30].sort_values(
+        "return_pct", ascending=False
+    ).head(10)
+
+    strong_signal = df[
+        (df["trades"].fillna(0) >= 30) &
+        (df["signal_regime"] == "strong")
+    ].sort_values(
+        ["oos_auc", "auc_gap", "oos_logloss"],
+        ascending=[False, False, True]
+    ).head(5)
+
+    moderate_signal = df[
+        (df["trades"].fillna(0) >= 30) &
+        (df["signal_regime"] == "moderate")
+    ].sort_values(
+        ["oos_auc", "auc_gap", "oos_logloss"],
+        ascending=[False, False, True]
+    ).head(5)
 
     html = f"""
     <html>
     <head>
         <title>ML Trading Dashboard</title>
+        <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+        <meta http-equiv="Pragma" content="no-cache">
+        <meta http-equiv="Expires" content="0">
         <style>
             body {{
                 font-family: Arial;
@@ -569,20 +789,21 @@ def export_html_dashboard(exp: pd.DataFrame):
     <h1>📊 ML Trading Research Dashboard</h1>
 
     {make_table("Latest Runs", latest)}
-    {make_table("Best Signal (AUC)", best_signal)}
-    {make_table("Best Edge", best_edge)}
-    {make_table("Best Return", best_return)}
+    {make_table("Best Signal (AUC, trades>=30)", best_signal, "No rows pass trades>=30")}
+    {make_table("Best Edge (trades>=30)", best_edge, "No rows pass trades>=30")}
+    {make_table("Best Return (trades>=30)", best_return, "No rows pass trades>=30")}
+    {make_table("Signal Leaderboard: strong regime", strong_signal, "No strong rows")}
+    {make_table("Signal Leaderboard: moderate regime", moderate_signal, "No moderate rows")}
 
     </body>
     </html>
     """
 
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         f.write(html)
 
     print(f"📊 Dashboard updated -> {path}")
 
-    # 🔥 auto open
     webbrowser.open(f"file://{os.path.abspath(path)}")
 
 def main():
@@ -634,11 +855,14 @@ def main():
 
     console.print(Panel("[bold green]Experiment Research Dashboard[/bold green]", expand=False))
     console.print(make_research_focus_table(exp))
+    console.print(make_best_signal_by_regime_table(exp))
     console.print(make_run_table(latest, "Latest Run"))
     console.print(make_run_table(best_signal, "Best by Signal Quality"))
     console.print(make_run_table(best_return, "Best by Return"))
     console.print(make_run_table(best_score, "Best by Return / |Drawdown|"))
     console.print(make_signal_leaderboard_table(exp, "Leaderboard: Signal Quality (trades>=30)", top_n=10, min_trades=30))
+    console.print(make_signal_leaderboard_for_regime(exp, "strong", top_n=5, min_trades=30))
+    console.print(make_signal_leaderboard_for_regime(exp, "moderate", top_n=5, min_trades=30))
     console.print(make_backtest_leaderboard_table(exp, "Leaderboard: Best Return (trades>=30)", "return_pct", ascending=False, min_trades=30))
     console.print(make_backtest_leaderboard_table(exp, "Leaderboard: Best Return / |DD| (trades>=30)", "score_ret_dd", ascending=False, min_trades=30))
     console.print(make_fold_summary_table(folds))

@@ -10,7 +10,7 @@ from ta.volatility import AverageTrueRange
 # =========================
 USE_MULTI_RETURNS = False
 USE_ZSCORE = False
-USE_VOL = False
+USE_VOL = True
 USE_TREND = True
 USE_INTERACTIONS = False
 

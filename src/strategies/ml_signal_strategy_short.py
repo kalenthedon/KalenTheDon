@@ -2,19 +2,18 @@ import numpy as np
 from backtesting import Strategy
 
 
-class MLSignalStrategy(Strategy):
+class MLSignalStrategyShort(Strategy):
     """
-    LONG-only strategy mapped to a downside label.
+    SHORT-only strategy aligned to a downside label.
 
     Current label:
       y = 1 when future return over horizon is below -threshold
 
     Therefore:
-      high probability => downside risk
-      low probability  => relative long bias
+      high probability => downside risk => short bias
     """
 
-    buy_thr = 0.45
+    short_thr = 0.48
     exit_thr = 0.50
     use_prev_bar_signal = True
 
@@ -43,7 +42,7 @@ class MLSignalStrategy(Strategy):
 
         # exits always allowed
         if self.position:
-            if self.position.is_long and p > self.exit_thr:
+            if self.position.is_short and p < self.exit_thr:
                 self.position.close()
             return
 
@@ -56,6 +55,6 @@ class MLSignalStrategy(Strategy):
         if self.block_bull_regime and regime == "bull":
             return
 
-        # long-only entry: low downside probability
-        if p < self.buy_thr:
-            self.buy()
+        # short-only entry: high downside probability
+        if 0.48 < p < 0.62:
+            self.sell()
