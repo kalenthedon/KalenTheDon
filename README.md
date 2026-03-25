@@ -2,20 +2,27 @@
 
 I build trading systems, educational systems, and deployment workflows under **Learn To Use Time Academy**.
 
-My work is focused on:
-- algorithmic trading research
-- paper trading and deployment systems
-- ML-assisted market strategies
-- building clear step-by-step systems that help people learn how to design, test, and operate bots responsibly
+## Mission
 
-## What I Do
-
-I use Learn To Use Time as a platform to document how ideas move from:
+Build systems that move cleanly from:
 
 `research -> validation -> paper trading -> deployment -> teaching`
 
-That means I am not only building bots.
-I am also building the systems, curriculum, and public documentation that make the work understandable and repeatable.
+The goal is not just to build bots.
+The goal is to build bots and teaching systems that other people can actually understand and operate.
+
+## Current Focus
+
+- ML-assisted crypto trading with explicit promotion gates
+- Hyperliquid testnet execution and VPS operations
+- SPY options research as a separate bot branch
+- building academy content that explains the workflow step by step
+
+## Start Here
+
+- Website: [learntousetime.com](https://www.learntousetime.com)
+- Crypto repo: [learntousetime-crypto-bot](https://github.com/kalenthedon/learntousetime-crypto-bot)
+- SPY options repo: [learntousetime-spy-options-bot](https://github.com/kalenthedon/learntousetime-spy-options-bot)
 
 ## Learn To Use Time Academy
 
@@ -29,6 +36,17 @@ That includes:
 
 Website:
 - [learntousetime.com](https://www.learntousetime.com)
+
+## What I Build
+
+My work is centered on:
+- algorithmic trading research
+- paper trading and deployment systems
+- ML-assisted market strategies
+- step-by-step systems that make complex workflows teachable
+
+That means I am not only building bots.
+I am also building the systems, curriculum, and public documentation around them.
 
 ## Current Projects
 
@@ -66,30 +84,6 @@ The educational side of the work includes:
 Website:
 - [learntousetime.com](https://www.learntousetime.com)
 
-## Main Repositories
-
-### Learn To Use Time Crypto Bot
-
-ML-assisted crypto trading research and deployment:
-- walk-forward validation
-- promotion gates
-- Hyperliquid testnet execution
-- VPS operations
-
-Repo:
-- [learntousetime-crypto-bot](https://github.com/kalenthedon/learntousetime-crypto-bot)
-
-### Learn To Use Time SPY Options Bot
-
-Separate SPY options research branch:
-- SPY long-put research
-- Alpaca option-chain capture
-- option-specific feature and label engineering
-- isolated repo so the options workflow stays clean and readable
-
-Repo:
-- [learntousetime-spy-options-bot](https://github.com/kalenthedon/learntousetime-spy-options-bot)
-
 ## How To Follow The Work
 
 - Website: [learntousetime.com](https://www.learntousetime.com)
@@ -105,6 +99,3 @@ I prefer systems that are:
 - explicit about risk
 - operationally realistic
 - simple enough to teach clearly
-
-The goal is not just to build bots.
-The goal is to build bots and teaching systems that other people can actually understand and operate.
