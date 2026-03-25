@@ -18,11 +18,42 @@ The goal is to build bots and teaching systems that other people can actually un
 - SPY options research as a separate bot branch
 - building academy content that explains the workflow step by step
 
+## Current Status
+
+- Crypto bot:
+  - approved ETH branch in active paper execution workflow
+- SPY options bot:
+  - early research branch with live chain capture and history collection
+- Academy:
+  - curriculum, repo structure, and public documentation still expanding
+
+## Tech Stack
+
+- Python
+- scikit-learn
+- pandas / numpy
+- walk-forward validation
+- Hyperliquid testnet
+- VPS automation
+- Alpaca options data
+- GitHub + Notion + academy content systems
+
 ## Start Here
 
 - Website: [learntousetime.com](https://www.learntousetime.com)
 - Crypto repo: [learntousetime-crypto-bot](https://github.com/kalenthedon/learntousetime-crypto-bot)
 - SPY options repo: [learntousetime-spy-options-bot](https://github.com/kalenthedon/learntousetime-spy-options-bot)
+
+## Best Place To Start
+
+If you want the education layer:
+- start with [learntousetime.com](https://www.learntousetime.com)
+
+If you want the crypto implementation:
+- start with [learntousetime-crypto-bot](https://github.com/kalenthedon/learntousetime-crypto-bot)
+
+If you want the new options research branch:
+- start with [learntousetime-spy-options-bot](https://github.com/kalenthedon/learntousetime-spy-options-bot)
 
 ## Learn To Use Time Academy
 
